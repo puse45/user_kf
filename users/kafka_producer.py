@@ -1,0 +1,60 @@
+from confluent_kafka import Producer
+import json
+import time
+from django.conf import settings
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+
+producer = Producer(settings.KAFKA_PRODUCER_CONFIG)
+
+
+def delivery_report(err, msg):
+    """Called once for each message produced to indicate delivery result"""
+    if err is not None:
+        logger.error(f'Message delivery failed: {err}')
+    else:
+        logger.debug(f'Message delivered to {msg.topic()} [{msg.partition()}]')
+
+
+def send_user_update_event(user, retry_count=3):
+    topic = 'user_updates'
+    data = {
+        'event_type': 'user_updated',
+        'user_id': user.id,
+        'name': user.name,
+        'email': user.email,
+        'address': user.address,
+        'phone': user.phone,
+        'timestamp': str(time.time())
+    }
+    for attempt in range(retry_count):
+        try:
+            producer.produce(
+                topic,
+                json.dumps(data),
+                callback=delivery_report
+            )
+            producer.flush()
+            break
+        except Exception as e:
+            logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
+            if attempt == retry_count - 1:
+                # Last attempt failed, store in DB for later processing
+                store_failed_event(data)
+            time.sleep(2 ** attempt)  # Exponential backoff
+
+
+def store_failed_event(event_data):
+    from .models import FailedEvent  # We'll create this model
+    try:
+        FailedEvent.objects.create(
+            topic='user_updates',
+            event_data=event_data,
+            error_message='Failed after retries'
+        )
+        logger.info("Stored failed event in database for later processing")
+    except Exception as e:
+        logger.error(f"Failed to store event in DB: {str(e)}")
