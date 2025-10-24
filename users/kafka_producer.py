@@ -1,6 +1,9 @@
 from confluent_kafka import Producer
 import json
 import time
+
+from confluent_kafka.admin import AdminClient
+from confluent_kafka.cimpl import NewTopic
 from django.conf import settings
 import logging
 
@@ -9,6 +12,34 @@ logger = logging.getLogger(__name__)
 
 
 producer = Producer(settings.KAFKA_PRODUCER_CONFIG)
+
+def create_kafka_topic(topic_name, num_partitions=3, replication_factor=1):
+    conf = {'bootstrap.servers': settings.KAFKA_BOOTSTRAP_SERVERS}
+    admin_client = AdminClient(conf)
+
+    # Check if topic exists
+    metadata = admin_client.list_topics(timeout=10)
+    if topic_name in metadata.topics:
+        print(f"Topic '{topic_name}' already exists")
+        return True
+
+    # Create new topic
+    new_topic = NewTopic(
+        topic_name,
+        num_partitions=num_partitions,
+        replication_factor=replication_factor
+    )
+
+    fs = admin_client.create_topics([new_topic])
+
+    for topic, f in fs.items():
+        try:
+            f.result()  # Wait for operation to complete
+            print(f"Topic '{topic}' created successfully")
+            return True
+        except Exception as e:
+            print(f"Failed to create topic '{topic}': {e}")
+            return False
 
 
 def delivery_report(err, msg):
@@ -21,6 +52,9 @@ def delivery_report(err, msg):
 
 def send_user_update_event(user, retry_count=3):
     topic = 'user_updates'
+    if not create_kafka_topic(topic):
+        logger.error("Failed to create topic 'user_updates'")
+        return
     data = {
         'event_type': 'user_updated',
         'user_id': user.id,
